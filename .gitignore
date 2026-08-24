@@ -1,0 +1,11 @@
+data/raw/*.txt
+data/raw/*.gz
+data/output/
+spark-warehouse/
+metastore_db/
+__pycache__/
+*.parquet
+*.csv
+.pytest_cache/
+.ipynb_checkpoints/
+metrics/run_*/
