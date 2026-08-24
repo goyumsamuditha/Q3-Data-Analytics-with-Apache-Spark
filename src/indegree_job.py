@@ -1,12 +1,12 @@
-from itertools import count
+import time
 import os
 import urllib.request
 import gzip
 import shutil
 import argparse
-from sqlalchemy import desc
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, explode, split
+from pyspark.sql.functions import col, count, desc, split
+from pyspark import SparkFiles
 
 def download_and_extract(raw_path:str):
     """
@@ -28,20 +28,11 @@ def download_and_extract(raw_path:str):
         print(f"Dataset already exists at {raw_path}. Skipping download.")
 
 
-def build_spark_session(app_name: str="IndegreeJob") -> SparkSession:
-    """
-    Build and return a Spark session.
-    """
-    spark = SparkSession.builder
-    spark.appName(app_name)
-    spark.config("spark.sql.shuffle.partitions", "8")  # Adjust the number of shuffle partitions as needed
-    spark.getOrCreate()
-    return spark
-
 def load_edges(spark: SparkSession, raw_path: str):
     """
     Load edges from the dataset into a DataFrame.
     """
+    
     raw_edges_df = spark.read.text(raw_path)
     edges_df = raw_edges_df.filter(~col("value").startswith("#"))
     split_col = split(col("value"), r"\s+")
@@ -57,7 +48,7 @@ def compute_indegree(edges_df):
     """
     Compute the indegree for each node.
     """
-    indegree_df = edges_df.groupBy("dst").agg(count("src").alias("indegree").orderBy(desc("in_degree")))
+    indegree_df = edges_df.groupBy("dst").agg(count("src").alias("indegree")).orderBy(desc("indegree"))
     indegree_df.cache()  # Cache the DataFrame to optimize performance for subsequent actions
     top50_indegree_df = indegree_df.limit(50)
     return top50_indegree_df, indegree_df
@@ -72,7 +63,7 @@ def main():
     download_and_extract(args.input)
     
     # Build Spark session
-    spark = build_spark_session()
+    spark = SparkSession.builder.appName("IndegreeJob").config("spark.sql.shuffle.partitions", "8").getOrCreate()
     
     # Load edges from the dataset
     edges_df = load_edges(spark, args.input)
@@ -83,10 +74,16 @@ def main():
     
     # Save the results to the output path
     top50_indegree_df.coalesce(1).write.mode("overwrite").csv(args.output + "/top50_indegree", header=True)
-    spark.stop()
+
     
     print(f"Top 50 indegree nodes saved to {args.output}/top50_indegree")
     top50_indegree_df.show(50, truncate=False)  # Show the top 50 indegree nodes in the console
+    
+    print("\n[SUCCESS] Keeping the Spark UI alive for 5 minutes so you can take screenshots!")
+    print("Open your browser to http://localhost:4040 right now.")
+    time.sleep(300)
+    
+    spark.stop()
 
 if __name__ == "__main__":
     main()
