@@ -73,27 +73,37 @@ This project utilizes a `Makefile` to fully automate cluster orchestration, dyna
 ### Step 0: Clean Slate Reset (For Already-Run PCs)
 If you have previously executed this project, residual containers or networks may cause port conflicts. Purge the previous environment by running:
 
-    make down
-
+    docker compose -f docker/docker-compose.yml down
+    
 ### Step 1: Start the Cluster
 Spin up the Spark master and worker containers in detached mode:
 
-    make up
+    docker compose -f docker/docker-compose.yml up -d
 
 *(Verify the cluster is running by opening the Spark Master UI in your browser at http://localhost:8080)*
 
-### Step 2: Submit the PySpark Job (Automated Download & Run)
-Trigger the distributed analytics job using the pre-configured Make command. Because of the volume mounts and Python logic, this single command will automatically download the dataset, distribute it, and calculate the Top 50 nodes:
+### Step 2: Distribute Source Code and Dataset into Containers
+Manually copy the Python execution script and the raw dataset into the /tmp directory of the master and worker nodes to avoid virtual path resolution issues:
 
-    make submit
+    docker cp .\src\indegree_job.py spark-master:/tmp/indegree_job.py
+    docker cp .\data\raw\web-BerkStan.txt spark-master:/tmp/web-BerkStan.txt
+    docker cp .\data\raw\web-BerkStan.txt spark-worker-1:/tmp/web-BerkStan.txt
+    docker cp .\data\raw\web-BerkStan.txt spark-worker-2:/tmp/web-BerkStan.txt
 
-### Step 3: Monitor Application Telemetry
+### Step 3: Submit the PySpark Job
+Execute the analytics job across the cluster using spark-submit:
+
+    docker exec -it spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 --executor-memory 2G --executor-cores 2 --total-executor-cores 4 /tmp/indegree_job.py --input /tmp/web-BerkStan.txt --output /tmp/top50_indegree
+
+### Step 4: Monitor Application Telemetry
 Once the terminal displays the calculated ASCII table of the Top 50 nodes, the script will automatically pause for 5 minutes. Open the Spark Web Console to monitor the DAG, stages, and execution metrics:
 
 *   **Spark Web UI:** http://localhost:4040
 *(Press Ctrl + C in your terminal to exit the pause timer early).*
 
-### Step 4: Teardown
+### Step 5: Teardown
 The final CSV output will automatically sync back to your local `data/output/top50_indegree` folder via the volume mount. Shut down the cluster environment safely:
 
-    make down
+    docker cp spark-master:/tmp/top50_indegree/top50_indegree .\data\output\
+
+    docker compose -f docker/docker-compose.yml down
