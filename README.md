@@ -12,23 +12,27 @@ The foundation of this pipeline relies on a standalone Apache Spark cluster (one
 *   **Action:** The cluster was initialized using the bridge network `spark-net` to ensure seamless internal communication between nodes.
 *   **Rationale:** Containerizing the processing engine guarantees environmental consistency, avoids local operating system constraints, and accurately simulates a distributed compute environment.
 
-### 2.2 Data Distribution
-*   **Action:** To circumvent virtual volume mounting latencies and ensure strict data locality, the `indegree_job.py` script and the raw `web-BerkStan.txt` dataset were explicitly copied into the temporary directories of all cluster nodes.
-*   **Rationale:** Distributing the data directly to the worker nodes mimics a distributed file system (like HDFS). This ensures that executors do not experience network latency or file-not-found exceptions when attempting to read the raw input.
+### 2.2 Volume Mounting and Data Synchronization
+*   **Action:** The architecture utilizes Docker volume mounts (`../data:/data` and `../src:/opt/spark-apps`) to synchronize the host repository directly with the master and worker containers.
+*   **Rationale:** This mimics a shared distributed file system. It ensures that any data downloaded or processed by the Spark Master is instantly accessible to the worker nodes without requiring manual file transfers across the network.
 
 ---
 
 ## 3. PySpark Pipeline Implementation
 
-### 3.1 Lazy Evaluation and Data Parsing
+### 3.1 Automated Data Ingestion
+*   **Action:** The script utilizes a custom `download_and_extract` function that checks for the existence of the dataset at runtime. If missing, it programmatically downloads the compressed `.gz` file from the Stanford SNAP repository and extracts it to the mapped volume.
+*   **Rationale:** Automating the data ingestion phase removes manual deployment steps, ensuring the pipeline is fully self-contained and reproducible on any host machine.
+
+### 3.2 Lazy Evaluation and Data Parsing
 *   **Action:** The dataset was ingested into a functional PySpark DataFrame using Spark's lazy evaluation engine. The `load_edges` function applies filtering to strip out metadata headers (lines starting with `#`), tokenizes the remaining strings using regular expressions (`\s+`), and casts the resulting indices into numerical `long` formats.
 *   **Rationale:** Lazy evaluation dictates that these transformations are only executed when a terminal action is called. This principle minimizes the memory footprint, allowing Spark's Catalyst Optimizer to determine the most efficient physical execution plan before consuming cluster resources.
 
-### 3.2 Aggregation of Structural In-Degree Distributions
+### 3.3 Aggregation of Structural In-Degree Distributions
 *   **Action:** The `compute_indegree` function was implemented to group the DataFrame by the destination vertex (`dst`) and aggregate the count of incoming source vertices (`src`).
 *   **Rationale:** Grouping and aggregating the edges identifies the structural in-degree of each node, a metric essential for determining the connectivity and hierarchical dominance of web pages within the graph network.
 
-### 3.3 Row Ordering and Explicit Memory Optimization
+### 3.4 Row Ordering and Explicit Memory Optimization
 *   **Action:** The aggregated data was ordered in descending fashion to extract the Top 50 dominant destination nodes using `.orderBy(desc("indegree")).limit(50)`. Crucially, an explicit memory optimization was applied by invoking `.cache()` on the resulting DataFrame.
 *   **Rationale:** The application performs multiple terminal actions on the aggregated data (displaying it in the console and writing it to a CSV file). Caching ensures the partitioned results are stored directly in executor RAM after the first computation. This prevents Spark from redundantly re-reading the text file and re-executing the expensive network shuffle operations.
 
@@ -60,12 +64,11 @@ A significant challenge in graph analytics is data skew, where highly connected 
 
 ## 5. Execution Guide (From Scratch)
 
-This project utilizes a `Makefile` to streamline cluster orchestration and job submission. Follow these exact steps to run the pipeline on a new machine or reset an existing environment.
+This project utilizes a `Makefile` to fully automate cluster orchestration, dynamic dataset downloading, and job submission. Follow these exact steps to run the pipeline on a new machine.
 
-### Prerequisites (New Laptop Setup)
+### Prerequisites
 *   **Docker Desktop:** Ensure it is installed and the Docker daemon is actively running.
 *   **Make:** Ensure `make` is installed on your system to utilize the automation commands.
-*   **Dataset:** Ensure the raw dataset is downloaded and saved exactly at `data/raw/web-BerkStan.txt`.
 
 ### Step 0: Clean Slate Reset (For Already-Run PCs)
 If you have previously executed this project, residual containers or networks may cause port conflicts. Purge the previous environment by running:
@@ -79,26 +82,18 @@ Spin up the Spark master and worker containers in detached mode:
 
 *(Verify the cluster is running by opening the Spark Master UI in your browser at http://localhost:8080)*
 
-### Step 2: Distribute the Dataset
-To avoid local volume-sync issues across different operating systems, manually push the raw dataset directly into the active containers:
-
-    docker cp data/raw/web-BerkStan.txt spark-master:/data/raw/web-BerkStan.txt
-    docker cp data/raw/web-BerkStan.txt spark-worker-1:/data/raw/web-BerkStan.txt
-    docker cp data/raw/web-BerkStan.txt spark-worker-2:/data/raw/web-BerkStan.txt
-
-### Step 3: Submit the PySpark Job
-Trigger the distributed analytics job using the pre-configured Make command:
+### Step 2: Submit the PySpark Job (Automated Download & Run)
+Trigger the distributed analytics job using the pre-configured Make command. Because of the volume mounts and Python logic, this single command will automatically download the dataset, distribute it, and calculate the Top 50 nodes:
 
     make submit
 
-### Step 4: Monitor Application Telemetry
+### Step 3: Monitor Application Telemetry
 Once the terminal displays the calculated ASCII table of the Top 50 nodes, the script will automatically pause for 5 minutes. Open the Spark Web Console to monitor the DAG, stages, and execution metrics:
 
 *   **Spark Web UI:** http://localhost:4040
 *(Press Ctrl + C in your terminal to exit the pause timer early).*
 
-### Step 5: Extract Results and Teardown
-To retrieve the processed results and shut down the cluster environment safely:
+### Step 4: Teardown
+The final CSV output will automatically sync back to your local `data/output/top50_indegree` folder via the volume mount. Shut down the cluster environment safely:
 
-    docker cp spark-master:/data/output/top50_indegree/ ./data/output/
     make down
